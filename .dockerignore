@@ -1,0 +1,6 @@
+# The builder image only needs the Dockerfile and scripts/. Everything else,
+# especially downloads/ and output/ (several GB) and your secrets, stays out of
+# the build context. config/ is mounted at run time instead.
+*
+!Dockerfile
+!scripts/

@@ -1,0 +1,23 @@
+# Installer settings for the x86-64 ISO (Subiquity autoinstall format).
+# ${NAME} placeholders are filled in from config/build.env and config/secrets.env.
+# The `user-data:` section is appended at build time from common-user-data.yaml,
+# so first-boot packages and scripts are shared with the Raspberry Pi image.
+autoinstall:
+  version: 1
+  locale: ${LOCALE}
+  keyboard:
+    layout: ${KEYBOARD_LAYOUT}
+  identity:
+    hostname: ${HOSTNAME_PREFIX}
+    username: ${ADMIN_USER}
+    password: "${PASSWORD_HASH}"
+  ssh:
+    install-server: true
+    allow-pw: ${SSH_ALLOW_PASSWORD}
+    authorized-keys: ${SSH_AUTHORIZED_KEYS}
+  storage:
+    layout:
+      name: lvm
+    # Kubernetes needs swap off, so don't create a swap file.
+    swap:
+      size: 0

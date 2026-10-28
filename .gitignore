@@ -1,0 +1,48 @@
+# ---------------------------------------------------------------------------
+# Your local settings and credentials (copy the matching *.example file)
+# ---------------------------------------------------------------------------
+# Any .env file in config/ except the shared build settings
+config/*.env
+!config/build.env
+# SSH public keys for the login user
+config/authorized_keys
+# Pi network settings; may contain a Wi-Fi password
+config/pi-network-config.yaml
+# Any other .env files, e.g. a top-level .env
+.env
+*.env.local
+
+# ---------------------------------------------------------------------------
+# Created by ./build.sh
+# ---------------------------------------------------------------------------
+# Official Ubuntu images, checksum lists and partial (.part) downloads
+downloads/
+# Finished ISO and Raspberry Pi images
+output/
+# Temporary work folders (.work-iso.XXXXXX, .work-pi.XXXXXX); removed after
+# each build but left behind if a build is killed
+.work-*/
+
+# ---------------------------------------------------------------------------
+# Leftovers from the previous version, which worked in the project root
+# ---------------------------------------------------------------------------
+source-files/
+grub.cfg.tmp
+*.iso
+*.img
+*.img.xz
+
+# ---------------------------------------------------------------------------
+# Local testing and editor/OS files
+# ---------------------------------------------------------------------------
+# VM disks if you test in this folder
+*.qcow2
+*.vmdk
+*.vdi
+*.part
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/

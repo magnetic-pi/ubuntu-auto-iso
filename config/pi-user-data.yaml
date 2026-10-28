@@ -1,0 +1,14 @@
+#cloud-config
+# First-boot settings for the Raspberry Pi image (cloud-init format). These
+# replace what the installer's identity/ssh sections do on the ISO.
+# ${NAME} placeholders are filled in from config/build.env and config/secrets.env.
+# common-user-data.yaml is appended to this file at build time.
+locale: ${LOCALE}
+ssh_pwauth: ${SSH_ALLOW_PASSWORD}
+users:
+  - name: ${ADMIN_USER}
+    groups: [adm, sudo]
+    shell: /bin/bash
+    lock_passwd: false
+    passwd: "${PASSWORD_HASH}"
+    ssh_authorized_keys: ${SSH_AUTHORIZED_KEYS}

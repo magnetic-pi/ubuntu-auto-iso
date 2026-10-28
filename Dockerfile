@@ -1,33 +1,31 @@
-# Use the Ubuntu 24.04 LTS release as the base
-FROM ubuntu:24.04
+# Builder for the autoinstall ISO and the Raspberry Pi image.
+# You don't need to build this yourself: ./build.sh does it automatically.
+FROM ubuntu:26.04
 
-# Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies for the script, including dos2unix
-RUN apt-get update && apt-get install -y \
-    wget \
-    p7zip-full \
-    xorriso \
-    isolinux \
-    dos2unix \
-    plocate \
-    && apt-get clean \
+#   xorriso      read and rewrite the ISO
+#   mtools       edit the Pi image's FAT boot partition without mounting it
+#   xz-utils     unpack and repack the Pi image
+#   cloud-init   validate the generated configs before the slow image steps
+#   openssl      `openssl passwd -6` for generating PASSWORD_HASH
+#   dos2unix     tolerate scripts checked out with Windows line endings
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        wget \
+        xorriso \
+        mtools \
+        xz-utils \
+        cloud-init \
+        openssl \
+        dos2unix \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the build script into the container
-COPY create_autoinstall_iso.sh /usr/local/bin/create_autoinstall_iso.sh
+COPY scripts/ /opt/builder/scripts/
+RUN find /opt/builder -name '*.sh' -exec dos2unix -q {} + \
+    && chmod +x /opt/builder/scripts/*.sh
 
-# Clean the script of any Windows line endings and make it executable
-RUN dos2unix /usr/local/bin/create_autoinstall_iso.sh && \
-    chmod +x /usr/local/bin/create_autoinstall_iso.sh
-
-# Create a mount point for the user's files
-RUN mkdir /data
-VOLUME /data
-
-# Set the main working directory inside the container
+# The project folder (config/, downloads/, output/) is mounted here.
 WORKDIR /data
-
-# Set the script as the default command to run
-ENTRYPOINT ["create_autoinstall_iso.sh"]
+ENTRYPOINT ["/opt/builder/scripts/entrypoint.sh"]
+CMD ["all"]

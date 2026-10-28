@@ -1,0 +1,194 @@
+# First-boot configuration (cloud-init) shared by all three images: server ISO,
+# Raspberry Pi and desktop ISO. ${NAME} placeholders are filled in from
+# config/build.env at build time; other $variables are left alone for the shell
+# scripts below. ${PROVISION_ROLE} is "node" for the server ISO and the Pi, and
+# "workstation" for the desktop ISO (see provision-node below).
+#
+# On the installed machine:
+#   cloud-init status --long          did first boot finish, and did anything fail?
+#   less /var/log/provision-node.log  output of the Docker/Kubernetes/Helm setup
+
+timezone: ${TIMEZONE}
+
+# set-unique-hostname (below) picks the hostname on first boot; stop cloud-init
+# from changing it back on later boots.
+preserve_hostname: true
+
+package_update: true
+package_upgrade: true
+packages:
+  - vim
+  - curl
+  - wget
+  - git
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - software-properties-common
+  - python3-pip
+  - python3-setuptools
+  - python3-wheel
+  - htop
+  - tree
+  - unzip
+  - net-tools
+  - ufw
+  # From the Ubuntu archive: `pip3 install` system-wide is blocked since 23.04.
+  - ansible
+
+write_files:
+  - path: /etc/docker/daemon.json
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "100m" }
+      }
+
+  - path: /etc/profile.d/k8s-aliases.sh
+    content: |
+      alias k="kubectl"
+      alias d="docker"
+      alias dc="docker compose"
+      alias h="helm"
+      alias a="ansible"
+
+  - path: /usr/local/sbin/set-unique-hostname
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Renames the machine to <prefix>-<last 6 hex digits of its first physical NIC's MAC>
+      # so that many machines installed from one image get distinct names.
+      set -euo pipefail
+      prefix="${HOSTNAME_PREFIX}"
+      new="$prefix"
+      for dev in /sys/class/net/*; do
+        # Only real hardware has a device link; this skips lo, bridges, veth, etc.
+        [ -e "$dev/device" ] || continue
+        mac="$(tr -d ':' < "$dev/address")"
+        new="$prefix-${mac: -6}"
+        echo "set-unique-hostname: using $(basename "$dev") ($mac)"
+        break
+      done
+      hostnamectl set-hostname "$new"
+      if grep -q '^127\.0\.1\.1' /etc/hosts; then
+        sed -i "s/^127\.0\.1\.1.*/127.0.1.1 $new/" /etc/hosts
+      else
+        echo "127.0.1.1 $new" >> /etc/hosts
+      fi
+      echo "set-unique-hostname: hostname is now $new"
+
+  - path: /usr/local/sbin/provision-node
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Runs once on first boot. Two roles, chosen per image at build time:
+      #   node         (server ISO, Raspberry Pi) Docker, Helm and the full Kubernetes
+      #                node setup, ready for `kubeadm init` / `kubeadm join`.
+      #   workstation  (desktop ISO) Docker, Helm and kubectl only; no kubelet or
+      #                kubeadm, swap left on, no Kubernetes firewall rules.
+      set -euxo pipefail
+      role="${PROVISION_ROLE}"
+      admin_user="${ADMIN_USER}"
+      k8s_version="${K8S_VERSION}"
+      . /etc/os-release
+      arch="$(dpkg --print-architecture)"
+      install -m 0755 -d /etc/apt/keyrings
+
+      # --- Docker (https://docs.docker.com/engine/install/ubuntu/)
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+      printf '%s\n' \
+        'Types: deb' \
+        'URIs: https://download.docker.com/linux/ubuntu' \
+        "Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}" \
+        'Components: stable' \
+        "Architectures: $arch" \
+        'Signed-By: /etc/apt/keyrings/docker.asc' \
+        > /etc/apt/sources.list.d/docker.sources
+
+      # --- Kubernetes (https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/)
+      curl -fsSL "https://pkgs.k8s.io/core:/stable:/$k8s_version/deb/Release.key" \
+        | gpg --dearmor --yes -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$k8s_version/deb/ /" \
+        > /etc/apt/sources.list.d/kubernetes.list
+
+      # --- Helm (https://helm.sh/docs/intro/install/); the old baltocdn.com repo is retired
+      helm_key_id="DDF78C3E6EBB2D2CC223C95C62BA89D07698DBC6"
+      curl -fsSL https://packages.buildkite.com/helm-linux/helm-debian/gpgkey -o /tmp/helm.asc
+      gpg --show-keys --with-colons /tmp/helm.asc | grep -q "^fpr:*$helm_key_id:"
+      install -m 0644 -D /tmp/helm.asc /etc/apt/keyrings/helm.asc
+      printf '%s\n' \
+        'Types: deb' \
+        'URIs: https://packages.buildkite.com/helm-linux/helm-debian/any/' \
+        'Suites: any' \
+        'Components: main' \
+        'Signed-By: /etc/apt/keyrings/helm.asc' \
+        > /etc/apt/sources.list.d/helm.sources
+
+      k8s_packages=(kubectl)
+      [ "$role" = node ] && k8s_packages+=(kubelet kubeadm)
+
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+        helm "${k8s_packages[@]}"
+      apt-mark hold "${k8s_packages[@]}"
+      systemctl enable --now docker
+      usermod -aG docker "$admin_user"
+
+      if [ "$role" != node ]; then
+        echo "provision-node: done ($role)"
+        exit 0
+      fi
+
+      # ----- Kubernetes node setup (role=node only) -----
+
+      # Kernel modules and sysctls that Kubernetes networking needs.
+      printf '%s\n' overlay br_netfilter > /etc/modules-load.d/kubernetes.conf
+      printf '%s\n' \
+        'net.bridge.bridge-nf-call-iptables  = 1' \
+        'net.bridge.bridge-nf-call-ip6tables = 1' \
+        'net.ipv4.ip_forward                 = 1' \
+        > /etc/sysctl.d/99-kubernetes.conf
+
+      # Docker's containerd.io package ships with the CRI plugin disabled, which
+      # Kubernetes needs. Replace it with the default config using the systemd
+      # cgroup driver, which kubelet uses.
+      containerd config default > /etc/containerd/config.toml
+      sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+      grep -q 'SystemdCgroup = true' /etc/containerd/config.toml \
+        || echo "WARNING: could not enable SystemdCgroup in /etc/containerd/config.toml"
+      systemctl restart containerd
+      systemctl enable kubelet
+
+      modprobe overlay
+      modprobe br_netfilter
+      sysctl --system
+      # VXLAN-based network plugins (Flannel, Calico VXLAN) need this module.
+      # Some kernels (older Raspberry Pi kernels) ship it in linux-modules-extra.
+      modprobe vxlan || apt-get install -y "linux-modules-extra-$(uname -r)" \
+        || echo "WARNING: vxlan kernel module not available"
+
+      # kubelet refuses to start with swap on by default.
+      swapoff -a
+      sed -i -E '/^[^#].*\sswap\s/ s/^/#/' /etc/fstab
+
+      # --- Firewall. Ports for a control-plane node that also runs workloads.
+      # Adjust for your network plugin: Flannel uses 8472/udp, Calico 179/tcp and 4789/udp.
+      ufw allow 22/tcp            # SSH
+      ufw allow 6443/tcp          # Kubernetes API server
+      ufw allow 2379:2380/tcp     # etcd
+      ufw allow 10250/tcp         # kubelet
+      ufw allow 10257/tcp         # kube-controller-manager
+      ufw allow 10259/tcp         # kube-scheduler
+      ufw allow 30000:32767/tcp   # NodePort services
+      ufw allow 8472/udp          # Flannel VXLAN
+      # Pod traffic is routed through the host, so forwarded packets must be allowed.
+      sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
+      ufw --force enable
+
+      echo "provision-node: done ($role)"
+
+runcmd:
+  - [/usr/local/sbin/set-unique-hostname]
+  - [sh, -c, "/usr/local/sbin/provision-node > /var/log/provision-node.log 2>&1"]

@@ -1,0 +1,18 @@
+# Optional. Copy to config/pi-network-config.yaml (which git ignores) to replace
+# the Raspberry Pi image's network settings. Without it, the Pi uses DHCP on
+# wired Ethernet. Format: netplan v2, see
+# https://cloudinit.readthedocs.io/en/latest/reference/network-config-format-v2.html
+network:
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: true
+      optional: true
+  wifis:
+    wlan0:
+      dhcp4: true
+      optional: true
+      regulatory-domain: US
+      access-points:
+        "your-wifi-name":
+          password: "your-wifi-password"
