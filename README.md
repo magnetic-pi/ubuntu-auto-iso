@@ -15,21 +15,31 @@ All targets currently use **Ubuntu 26.04.1 LTS**, and every machine gets a uniqu
 
 ## Quick start
 
-### 1. Set the login user (and optionally SSH keys)
+### 1. Set up the users (and SSH keys)
 
 ```bash
 cp config/secrets.env.example config/secrets.env
-# edit ADMIN_USER and ADMIN_PASSWORD in config/secrets.env
+# edit ADMIN_USER, ADMIN_PASSWORD and NOSSHPW_USER in config/secrets.env
 
-# optional: your SSH public key(s), one per line
-cp ~/.ssh/id_ed25519.pub config/authorized_keys
+# SSH public keys, one per line; use a different key for each user
+cp ~/.ssh/id_ed25519.pub          config/authorized_keys           # for ADMIN_USER (ubuntu)
+cp ~/.ssh/nosshpw_ed25519.pub     config/nosshpw_authorized_keys   # for nosshpw (server and Pi)
 ```
 
-**SSH keys:** every key in `config/authorized_keys` is added to the login user on all three images. When at least one key is there, the **server ISO and Raspberry Pi** turn off SSH password logins (`PasswordAuthentication no`), so only your keys can log in over SSH; this blocks password brute-forcing. The desktop ISO keeps SSH passwords, since it's a local VM. Your password still works at the console and for `sudo`. Change this with `SSH_ALLOW_PASSWORD` in `config/build.env`: `auto` (default, as above), `false` (keys only on every image) or `true` (always allow passwords). The build checks the file: it refuses a private key pasted by mistake and skips lines that aren't public keys, with a warning.
+**Users.** The server ISO and the Raspberry Pi get two users; the desktop ISO gets only the first:
 
-On the server and Pi, the setting goes into `/etc/ssh/sshd_config` and into `/etc/ssh/sshd_config.d/01-password-auth.conf`. sshd reads the `sshd_config.d` files first and uses the first value it finds, so the `01-` file wins over anything else there.
+| User | Password | SSH keys | sudo |
+|---|---|---|---|
+| `ADMIN_USER` (default `ubuntu`, set in `secrets.env`) | `ADMIN_PASSWORD` from `secrets.env` | `config/authorized_keys` | asks for the password (desktop: no prompt, see `DESKTOP_SUDO_NOPASSWD`) |
+| `NOSSHPW_USER` (default `nosshpw`, set in `secrets.env`) | none: it can only log in with its keys | `config/nosshpw_authorized_keys` | no prompt |
 
-You don't need to generate a hash yourself: the build runs `ADMIN_PASSWORD` through `openssl passwd -6` (SHA-512, random salt) and only the hash goes into the images. If you'd rather not keep the plain password on disk, you can set `PASSWORD_HASH` to the output of `openssl passwd -6` instead; if both are set, `ADMIN_PASSWORD` wins. The username can't be a system name such as `admin`, `root` or `sudo`, because the Ubuntu installer refuses those; the build checks this for you. Both files are ignored by git, so your credentials stay out of the repository.
+The two key files must hold different keys; the build stops if the same key is in both. Without any keys in `config/nosshpw_authorized_keys`, `nosshpw` can't log in at all (the build warns), but `ubuntu` can still switch to it with `sudo -iu nosshpw`. Set `NOSSHPW_USER=` (empty) in `secrets.env` for no second user.
+
+**SSH passwords.** Only `ADMIN_USER` has a password. When `config/authorized_keys` has at least one key, the **server ISO and Raspberry Pi** turn off SSH password logins (`PasswordAuthentication no`), so `ubuntu` logs in over SSH with its key; this blocks password brute-forcing. Its password still works at the console. The desktop ISO keeps SSH passwords, since it's a local VM. Change this with `SSH_ALLOW_PASSWORD` in `config/build.env`: `auto` (default, as above), `false` (keys only on every image) or `true` (always allow passwords). On the server and Pi, the setting goes into `/etc/ssh/sshd_config` and into `/etc/ssh/sshd_config.d/01-password-auth.conf`; sshd reads the `sshd_config.d` files first and uses the first value it finds, so the `01-` file wins over anything else there.
+
+The build checks both key files: it refuses a private key pasted by mistake and skips lines that aren't public keys, with a warning.
+
+You don't need to generate a hash yourself: the build runs `ADMIN_PASSWORD` through `openssl passwd -6` (SHA-512, random salt) and only the hash goes into the images. If you'd rather not keep the plain password on disk, you can set `PASSWORD_HASH` to the output of `openssl passwd -6` instead; if both are set, `ADMIN_PASSWORD` wins. The username can't be a system name such as `admin`, `root` or `sudo`, because the Ubuntu installer refuses those; the build checks this for you. `secrets.env` and the key files are ignored by git, so your credentials stay out of the repository.
 
 ### 2. Build
 
@@ -84,9 +94,10 @@ The server and Pi nodes are then ready for `kubeadm init` or `kubeadm join`. On 
 
 | File | What it controls |
 |---|---|
-| `config/build.env` | Ubuntu version, hostname prefixes, locale, timezone, SSH password logins, Kubernetes version, ISO confirmation and boot-menu timeout, Pi kernel arguments |
-| `config/secrets.env` | Login user: `ADMIN_USER` and `ADMIN_PASSWORD` (or `PASSWORD_HASH`) (not in git) |
-| `config/authorized_keys` | SSH public keys for the login user, one per line (not in git). With keys present, the server ISO and Pi allow SSH logins with keys only |
+| `config/build.env` | Ubuntu version, hostname prefixes, locale, timezone, SSH password logins, the key-only user's name, desktop passwordless sudo, Kubernetes version, ISO confirmation and boot-menu timeout, Pi kernel arguments |
+| `config/secrets.env` | Usernames and password: `ADMIN_USER`, `ADMIN_PASSWORD` (or `PASSWORD_HASH`) and `NOSSHPW_USER` (not in git) |
+| `config/authorized_keys` | SSH public keys for `ADMIN_USER`, one per line (not in git). With keys present, the server ISO and Pi allow SSH logins with keys only |
+| `config/nosshpw_authorized_keys` | SSH public keys for the key-only `NOSSHPW_USER` on the server ISO and Pi, one per line (not in git) |
 | `config/common-user-data.yaml` | First-boot setup **shared by the server ISO and the Pi**: packages, Docker, Kubernetes, Helm, firewall, hostname |
 | `config/iso-autoinstall.yaml` | Server ISO installer settings: disk layout, keyboard, user |
 | `config/desktop-autoinstall.yaml` | Desktop ISO installer settings: disk layout, keyboard, user, VM guest tools |

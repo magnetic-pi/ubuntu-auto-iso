@@ -35,9 +35,20 @@ boot_partition_offset() {
 
 # 1. Render cloud-init user-data: Pi settings + shared first-boot user-data.
 log "Rendering user-data (Ubuntu $UBUNTU_VERSION)..."
+if [ -n "$NOSSHPW_USER" ]; then
+  NOSSHPW_LINE="  - $NOSSHPW_USER_YAML"
+  log "Users: $ADMIN_USER (password, $SSH_KEY_COUNT SSH key(s), sudo asks for the password) and $NOSSHPW_USER (no password, $NOSSHPW_KEY_COUNT SSH key(s), sudo without a prompt)."
+  [ "$NOSSHPW_KEY_COUNT" -gt 0 ] || warn "config/nosshpw_authorized_keys has no keys, so $NOSSHPW_USER can't log in (no password either); use 'sudo -iu $NOSSHPW_USER' from $ADMIN_USER."
+else
+  NOSSHPW_LINE=""
+fi
 {
   # cloud-init rejects an empty key list, so drop the line when there are no keys.
-  render_template "$CONFIG_DIR/pi-user-data.yaml" | sed '/^[[:space:]]*ssh_authorized_keys: \[\][[:space:]]*$/d'
+  # Replace the @NOSSHPW_USER@ marker with the key-only user (ENVIRON keeps the
+  # value byte-for-byte; awk -v would interpret its backslashes).
+  render_template "$CONFIG_DIR/pi-user-data.yaml" \
+    | sed '/^[[:space:]]*ssh_authorized_keys: \[\][[:space:]]*$/d' \
+    | NOSSHPW_LINE="$NOSSHPW_LINE" awk '/@NOSSHPW_USER@/ { if (ENVIRON["NOSSHPW_LINE"] != "") print ENVIRON["NOSSHPW_LINE"]; next } { print }'
   echo
   render_template "$CONFIG_DIR/common-user-data.yaml"
 } > "$WORK/user-data"

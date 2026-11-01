@@ -11,6 +11,12 @@ users:
     # has it from the first login (Docker itself is installed later in first boot).
     groups: [adm, sudo, docker]
     shell: /bin/bash
+    # sudo asks for this user's password; the key-only user below has no prompt.
+    sudo: "ALL=(ALL:ALL) ${SUDO_RULE}"
     lock_passwd: false
     passwd: "${PASSWORD_HASH}"
     ssh_authorized_keys: ${SSH_AUTHORIZED_KEYS}
+  # The key-only user (NOSSHPW_USER, default "nosshpw") is added on the next line
+  # at build time: no password, keys from config/nosshpw_authorized_keys, sudo
+  # without a prompt. Keep this marker line.
+  # @NOSSHPW_USER@

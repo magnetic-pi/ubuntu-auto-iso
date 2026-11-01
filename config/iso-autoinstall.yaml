@@ -26,3 +26,9 @@ autoinstall:
     # first login already has it (Docker itself is installed on first boot).
     - curtin in-target -- groupadd --system --force docker
     - curtin in-target -- usermod -aG docker ${ADMIN_USER}
+    # sudo rule for the login user: sudo asks for its password. (The key-only
+    # NOSSHPW_USER, added in user-data, runs sudo without a prompt.) Checked with
+    # visudo; removed if invalid so sudo can never be broken by it.
+    - >-
+      curtin in-target -- sh -c 'f=/etc/sudoers.d/90-${ADMIN_USER};
+      echo "${ADMIN_USER} ALL=(ALL:ALL) ${SUDO_RULE}" > $f && chmod 0440 $f && visudo -cf $f || rm -f $f'

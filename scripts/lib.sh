@@ -11,7 +11,7 @@ OUTPUT_DIR="$DATA_DIR/output"
 CONFIG_VARS=(
   UBUNTU_VERSION ISO_BASE_URL PI_BASE_URL ADMIN_USER
   ISO_HOSTNAME_PREFIX PI_HOSTNAME_PREFIX DESKTOP_HOSTNAME_PREFIX LOCALE KEYBOARD_LAYOUT TIMEZONE
-  SSH_ALLOW_PASSWORD K8S_VERSION ISO_REQUIRE_CONFIRMATION ISO_BOOT_TIMEOUT PI_KERNEL_ARGS
+  SSH_ALLOW_PASSWORD DESKTOP_SUDO_NOPASSWD NOSSHPW_USER K8S_VERSION ISO_REQUIRE_CONFIRMATION ISO_BOOT_TIMEOUT PI_KERNEL_ARGS
   PASSWORD_HASH ADMIN_PASSWORD
 )
 
@@ -74,7 +74,43 @@ load_config() {
 
   check_username "$ADMIN_USER"
 
-  load_authorized_keys
+  case "${DESKTOP_SUDO_NOPASSWD:-true}" in
+    true|false) ;;
+    *) die "DESKTOP_SUDO_NOPASSWD must be true or false (got '$DESKTOP_SUDO_NOPASSWD')." ;;
+  esac
+  # ADMIN_USER's sudo asks for the password; the desktop target may change this.
+  SUDO_RULE="ALL"
+
+  # ADMIN_USER's SSH keys
+  load_keys_file "$CONFIG_DIR/authorized_keys"
+  SSH_AUTHORIZED_KEYS="$KEYS_YAML"
+  SSH_KEY_COUNT=$KEYS_COUNT
+  local admin_blobs="$KEYS_BLOBS" blob
+
+  # Second user on the server ISO and Pi: no password, logs in with its own SSH
+  # keys (config/nosshpw_authorized_keys), sudo without a prompt.
+  # NOSSHPW_USER= (empty) means no second user.
+  NOSSHPW_USER="${NOSSHPW_USER-nosshpw}"
+  NOSSHPW_KEY_COUNT=0
+  NOSSHPW_USER_YAML=""
+  if [ -n "$NOSSHPW_USER" ]; then
+    check_username "$NOSSHPW_USER" NOSSHPW_USER
+    [ "$NOSSHPW_USER" != "$ADMIN_USER" ] \
+      || die "NOSSHPW_USER and ADMIN_USER are both '$ADMIN_USER'; they must be two different users."
+    load_keys_file "$CONFIG_DIR/nosshpw_authorized_keys"
+    NOSSHPW_KEY_COUNT=$KEYS_COUNT
+    for blob in $KEYS_BLOBS; do
+      case " $admin_blobs " in
+        *" $blob "*) die "The same SSH key is in config/authorized_keys ($ADMIN_USER) and config/nosshpw_authorized_keys ($NOSSHPW_USER). Give $NOSSHPW_USER its own key." ;;
+      esac
+    done
+    # One-line entry for cloud-init's users: list. lock_passwd: the account has
+    # no usable password, so it can only log in with its SSH keys.
+    NOSSHPW_USER_YAML="{name: $NOSSHPW_USER, gecos: SSH key-only user, shell: /bin/bash, groups: [adm, docker], lock_passwd: true, sudo: 'ALL=(ALL:ALL) NOPASSWD:ALL'"
+    if [ "$KEYS_COUNT" -gt 0 ]; then NOSSHPW_USER_YAML+=", ssh_authorized_keys: $KEYS_YAML"; fi
+    NOSSHPW_USER_YAML+="}"
+  fi
+
   case "$SSH_ALLOW_PASSWORD" in
     auto|true) ;;
     false) [ "$SSH_KEY_COUNT" -gt 0 ] || die "SSH_ALLOW_PASSWORD=false but config/authorized_keys has no keys; nobody could log in over SSH." ;;
@@ -98,33 +134,34 @@ RESERVED_USERNAMES=" root daemon bin sys sync games man lp mail news uucp proxy 
   ssl-cert sslwrap statd syslog telnetd tftpd "
 
 check_username() {
-  local name="$1"
+  local name="$1" var="${2:-ADMIN_USER}"
   [[ "$name" =~ ^[a-z_][a-z0-9_-]*$ ]] && [ "${#name}" -le 32 ] \
-    || die "ADMIN_USER '$name' is not a valid username (lowercase letters, digits, _ and -; at most 32 characters)."
+    || die "$var '$name' is not a valid username (lowercase letters, digits, _ and -; at most 32 characters)."
   case "$(echo $RESERVED_USERNAMES | tr ' ' '\n' | grep -Fx -- "$name")" in
     "") ;;
-    *) die "ADMIN_USER '$name' is reserved by the system and the Ubuntu installer will refuse it. Pick another name for ADMIN_USER in config/secrets.env (e.g. ubuntu, ops, k8sadmin)." ;;
+    *) die "$var '$name' is reserved by the system and the Ubuntu installer will refuse it. Pick another name for $var (e.g. ubuntu, ops, k8sadmin)." ;;
   esac
 }
 
-# Read config/authorized_keys (one public key per line, # comments allowed).
-# Sets SSH_AUTHORIZED_KEYS to a YAML flow list ["key one", "key two"] and
-# SSH_KEY_COUNT to the number of keys. Refuses private keys; skips lines that
-# don't look like public keys, with a warning.
+# Read a keys file (one public key per line, # comments allowed). Sets
+# KEYS_YAML to a YAML flow list ["key one", "key two"], KEYS_COUNT to the number
+# of keys, and KEYS_BLOBS to their base64 parts (to spot one key in two files).
+# Refuses private keys; skips lines that aren't public keys, with a warning.
 SSH_KEY_TYPES='(ssh-ed25519|ssh-rsa|ssh-dss|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)'
-load_authorized_keys() {
-  local file="$CONFIG_DIR/authorized_keys" line out="" sep="" n=0 lineno=0
+load_keys_file() {
+  local file="$1" name="config/${1##*/}" line out="" sep="" n=0 lineno=0 blobs=""
   if [ -f "$file" ]; then
     grep -q "PRIVATE KEY" "$file" \
-      && die "config/authorized_keys contains a PRIVATE key. Put only public keys there (the .pub file, e.g. ~/.ssh/id_ed25519.pub), and keep the private key secret."
+      && die "$name contains a PRIVATE key. Put only public keys there (the .pub file, e.g. ~/.ssh/id_ed25519.pub), and keep the private key secret."
     while IFS= read -r line || [ -n "$line" ]; do
       lineno=$((lineno + 1))
       line="${line%$'\r'}"
       [[ -z "${line// }" || "$line" =~ ^[[:space:]]*\# ]] && continue
-      if ! [[ "$line" =~ (^|[[:space:]])$SSH_KEY_TYPES[[:space:]]+[A-Za-z0-9+/]+=*([[:space:]]|$) ]]; then
-        warn "config/authorized_keys line $lineno doesn't look like an SSH public key; skipping it."
+      if ! [[ "$line" =~ (^|[[:space:]])$SSH_KEY_TYPES[[:space:]]+([A-Za-z0-9+/]+=*)([[:space:]]|$) ]]; then
+        warn "$name line $lineno doesn't look like an SSH public key; skipping it."
         continue
       fi
+      blobs+=" ${BASH_REMATCH[-2]}"
       line="${line//\\/\\\\}"
       line="${line//\"/\\\"}"
       out+="$sep\"$line\""
@@ -132,14 +169,16 @@ load_authorized_keys() {
       n=$((n + 1))
     done < "$file"
   fi
-  SSH_AUTHORIZED_KEYS="[$out]"
-  SSH_KEY_COUNT=$n
+  KEYS_YAML="[$out]"
+  KEYS_COUNT=$n
+  KEYS_BLOBS="${blobs# }"
 }
 
-# Decide whether SSH accepts passwords on this image. SSH_ALLOW_PASSWORD=auto
-# (the default) means: with keys in config/authorized_keys, use $1 (false for
-# the server ISO and Pi, true for the desktop); without keys, allow passwords so
-# nobody is locked out. Sets SSH_ALLOW_PASSWORD (true/false) and
+# Decide whether SSH accepts passwords on this image. Only ADMIN_USER has a
+# password, so only its keys (config/authorized_keys) count. SSH_ALLOW_PASSWORD=
+# auto (the default) means: with keys, use $1 (false for the server ISO and Pi,
+# true for the desktop); without keys, allow passwords so ADMIN_USER isn't
+# locked out of SSH. Sets SSH_ALLOW_PASSWORD (true/false) and
 # SSH_PASSWORD_AUTH (yes/no, for sshd_config).
 resolve_ssh_password() {
   if [ "$SSH_ALLOW_PASSWORD" = auto ]; then
@@ -159,7 +198,7 @@ resolve_ssh_password() {
 # Anything else that looks like a variable (e.g. $foo, ${foo:-bar}) is left alone.
 TEMPLATE_VARS=(
   ADMIN_USER HOSTNAME_PREFIX LOCALE KEYBOARD_LAYOUT TIMEZONE
-  SSH_ALLOW_PASSWORD SSH_PASSWORD_AUTH SSH_AUTHORIZED_KEYS PASSWORD_HASH K8S_VERSION
+  SSH_ALLOW_PASSWORD SSH_PASSWORD_AUTH SSH_AUTHORIZED_KEYS PASSWORD_HASH K8S_VERSION SUDO_RULE
 )
 render_template() {
   local content name

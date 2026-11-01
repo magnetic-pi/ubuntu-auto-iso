@@ -19,6 +19,14 @@ case "$VARIANT" in
     TEMPLATE="$CONFIG_DIR/iso-autoinstall.yaml"
     resolve_ssh_password false   # keys present -> SSH keys only
     USER_DATA="$CONFIG_DIR/common-user-data.yaml"
+    # The installer creates ADMIN_USER; the key-only NOSSHPW_USER is added to the
+    # first-boot user-data (the installer appends it to its own users list).
+    EXTRA_USER_DATA=""
+    if [ -n "$NOSSHPW_USER" ]; then
+      EXTRA_USER_DATA="users:"$'\n'"  - $NOSSHPW_USER_YAML"
+      log "Users: $ADMIN_USER (password, $SSH_KEY_COUNT SSH key(s), sudo asks for the password) and $NOSSHPW_USER (no password, $NOSSHPW_KEY_COUNT SSH key(s), sudo without a prompt)."
+      [ "$NOSSHPW_KEY_COUNT" -gt 0 ] || warn "config/nosshpw_authorized_keys has no keys, so $NOSSHPW_USER can't log in (no password either); use 'sudo -iu $NOSSHPW_USER' from $ADMIN_USER."
+    fi
     SOURCE_ISO="ubuntu-${UBUNTU_VERSION}-live-server-amd64.iso"
     OUTPUT_ISO="$OUTPUT_DIR/ubuntu-${UBUNTU_VERSION}-autoinstall-amd64.iso"
     MENU_TITLE="Autoinstall Ubuntu Server"
@@ -28,6 +36,8 @@ case "$VARIANT" in
     TEMPLATE="$CONFIG_DIR/desktop-autoinstall.yaml"
     resolve_ssh_password true    # local VM: keep SSH passwords unless SSH_ALLOW_PASSWORD=false
     USER_DATA="$CONFIG_DIR/desktop-user-data.yaml"
+    EXTRA_USER_DATA=""           # the desktop has only ADMIN_USER
+    if [ "${DESKTOP_SUDO_NOPASSWD:-true}" = true ]; then SUDO_RULE="NOPASSWD:ALL"; fi
     SOURCE_ISO="ubuntu-${UBUNTU_VERSION}-desktop-amd64.iso"
     OUTPUT_ISO="$OUTPUT_DIR/ubuntu-${UBUNTU_VERSION}-desktop-autoinstall-amd64.iso"
     MENU_TITLE="Autoinstall Ubuntu Desktop"
@@ -40,12 +50,13 @@ trap 'rm -rf "$WORK"' EXIT
 
 # 1. Render the installer config: installer settings + shared first-boot user-data.
 log "Rendering autoinstall.yaml (Ubuntu $UBUNTU_VERSION $VARIANT)..."
-{ echo "#cloud-config"; render_template "$USER_DATA"; } > "$WORK/user-data.check"
+{ render_template "$USER_DATA"; [ -z "$EXTRA_USER_DATA" ] || printf '%s\n' "$EXTRA_USER_DATA"; } > "$WORK/user-data.yaml"
+{ echo "#cloud-config"; cat "$WORK/user-data.yaml"; } > "$WORK/user-data.check"
 validate_cloud_config "$WORK/user-data.check"
 {
   render_template "$TEMPLATE"
   echo "  user-data:"
-  render_template "$USER_DATA" | sed 's/^\(.\)/    \1/'
+  sed 's/^\(.\)/    \1/' "$WORK/user-data.yaml"
 } > "$WORK/autoinstall.yaml"
 
 # 2. Get the official ISO.

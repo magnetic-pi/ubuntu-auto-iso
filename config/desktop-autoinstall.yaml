@@ -31,6 +31,12 @@ autoinstall:
     # first login already has it (Docker itself is installed on first boot).
     - curtin in-target -- groupadd --system --force docker
     - curtin in-target -- usermod -aG docker ${ADMIN_USER}
+    # sudo rule for the login user: "NOPASSWD:ALL" (DESKTOP_SUDO_NOPASSWD=true)
+    # means no password prompt for sudo. Checked with visudo; removed if invalid
+    # so sudo can never be broken by it.
+    - >-
+      curtin in-target -- sh -c 'f=/etc/sudoers.d/90-${ADMIN_USER};
+      echo "${ADMIN_USER} ALL=(ALL:ALL) ${SUDO_RULE}" > $f && chmod 0440 $f && visudo -cf $f || rm -f $f'
     # Let the first-boot user-data run even if the desktop image disabled cloud-init.
     - rm -f /target/etc/cloud/cloud-init.disabled
     # Skip GNOME's "Welcome to Ubuntu" setup wizard on first login.

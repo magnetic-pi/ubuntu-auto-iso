@@ -6,6 +6,7 @@ config/*.env
 !config/build.env
 # SSH public keys for the login user
 config/authorized_keys
+config/nosshpw_authorized_keys
 # Pi network settings; may contain a Wi-Fi password
 config/pi-network-config.yaml
 # Any other .env files, e.g. a top-level .env

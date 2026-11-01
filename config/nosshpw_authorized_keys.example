@@ -1,0 +1,9 @@
+# Copy this file to config/nosshpw_authorized_keys (which git ignores) and put
+# the SSH PUBLIC key(s) for the key-only user (NOSSHPW_USER in config/build.env,
+# default "nosshpw") here, one per line, e.g.:
+#   cp ~/.ssh/nosshpw_ed25519.pub config/nosshpw_authorized_keys
+# This user has no password, so these keys are its only way in. It runs sudo
+# without a prompt. Use a different key than the one in config/authorized_keys
+# (the build refuses the same key in both). Server ISO and Raspberry Pi only.
+# Example:
+# ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... automation@laptop
