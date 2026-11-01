@@ -1,0 +1,130 @@
+# First-boot configuration (cloud-init) for the desktop ISO only. The server
+# ISO and the Raspberry Pi use common-user-data.yaml instead.
+# ${NAME} placeholders are filled in from config/build.env at build time; other
+# $variables are left alone for the shell scripts below.
+#
+# On the installed machine:
+#   cloud-init status --long        did first boot finish, and did anything fail?
+#   less /var/log/setup-desktop.log output of the package and Docker install
+
+timezone: ${TIMEZONE}
+
+# set-unique-hostname (below) picks the hostname on first boot; stop cloud-init
+# from changing it back on later boots.
+preserve_hostname: true
+
+write_files:
+  - path: /usr/local/sbin/set-unique-hostname
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Renames the machine to <prefix>-<last 6 hex digits of its first physical NIC's MAC>
+      # so that many machines installed from one image get distinct names.
+      set -euo pipefail
+      prefix="${HOSTNAME_PREFIX}"
+      new="$prefix"
+      for dev in /sys/class/net/*; do
+        # Only real hardware has a device link; this skips lo, bridges, veth, etc.
+        [ -e "$dev/device" ] || continue
+        mac="$(tr -d ':' < "$dev/address")"
+        new="$prefix-${mac: -6}"
+        echo "set-unique-hostname: using $(basename "$dev") ($mac)"
+        break
+      done
+      hostnamectl set-hostname "$new"
+      if grep -q '^127\.0\.1\.1' /etc/hosts; then
+        sed -i "s/^127\.0\.1\.1.*/127.0.1.1 $new/" /etc/hosts
+      else
+        echo "127.0.1.1 $new" >> /etc/hosts
+      fi
+      echo "set-unique-hostname: hostname is now $new"
+
+  - path: /usr/local/sbin/setup-desktop
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Installs the desktop's tools and Docker. Runs once on first boot, as root.
+      # Exit immediately if a command exits with a non-zero status
+      set -e
+      admin_user="${ADMIN_USER}"
+      export DEBIAN_FRONTEND=noninteractive
+
+      # On first boot Ubuntu's own updaters may hold the package lock: wait up to
+      # 10 minutes for it. The network may also still be coming up: retry updates.
+      apt_get() { apt-get -o DPkg::Lock::Timeout=600 "$@"; }
+      apt_update() {
+        local i
+        for i in $(seq 20); do
+          apt_get update && return 0
+          echo "--> apt update failed, retrying in 15s ($i/20)..."
+          sleep 15
+        done
+        return 1
+      }
+
+      echo "=================================================="
+      echo " Starting desktop tools and Docker installation"
+      echo "=================================================="
+
+      # 1. Update and install prerequisites
+      echo "--> Updating system packages and installing prerequisites..."
+      apt_update
+      apt_get install -y ca-certificates curl
+
+      # 2. Desktop tools. ufw is installed but left off.
+      tools=(
+        vim curl wget git htop tree unzip net-tools
+        ca-certificates gnupg lsb-release software-properties-common
+        python3-pip python3-setuptools python3-wheel
+        ansible
+        ufw
+        util-linux-extra
+      )
+      echo "--> Installing tools: ${tools[*]}"
+      if ! apt_get install -y "${tools[@]}"; then
+        # One unavailable package shouldn't block the others: retry one at a time.
+        echo "--> Installing all tools at once failed; trying one at a time..."
+        for p in "${tools[@]}"; do
+          apt_get install -y "$p" || echo "WARNING: could not install $p"
+        done
+      fi
+
+      # 3. Set up Docker GPG key and Repository
+      echo "--> Setting up Docker repository keys..."
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+      chmod a+r /etc/apt/keyrings/docker.asc
+
+      echo "--> Adding Docker repository to sources list..."
+      tee /etc/apt/sources.list.d/docker.sources <<EOF
+      Types: deb
+      URIs: https://download.docker.com/linux/ubuntu
+      Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+      Components: stable
+      Architectures: $(dpkg --print-architecture)
+      Signed-By: /etc/apt/keyrings/docker.asc
+      EOF
+
+      # 4. Install Docker Engine and Plugins
+      echo "--> Installing Docker and Docker Compose..."
+      apt_update
+      apt_get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+      # 5. Configure Post-Installation (Non-root user access)
+      echo "--> Configuring user permissions..."
+      if ! getent group docker > /dev/null; then
+        groupadd docker
+      fi
+      usermod -aG docker "$admin_user"
+
+      echo "=================================================="
+      echo " Installation Complete!"
+      echo "=================================================="
+      echo "Log out and back in (or run: newgrp docker) so $admin_user can use docker, then verify with:"
+      echo "  docker run hello-world"
+      echo "  docker compose version"
+      echo "=================================================="
+
+runcmd:
+  - [/usr/local/sbin/set-unique-hostname]
+  - [sh, -c, "/usr/local/sbin/setup-desktop > /var/log/setup-desktop.log 2>&1"]

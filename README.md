@@ -6,9 +6,12 @@ Builds prebaked Ubuntu images for repeatable, hands-off installs, from one share
 |---|---|---|
 | `iso` | `output/ubuntu-26.04.1-autoinstall-amd64.iso` | x86-64 installer ISO. Boots straight into an unattended install driven by `autoinstall.yaml`. |
 | `pi` | `output/ubuntu-26.04.1-autoconfig-arm64+raspi.img.xz` | Raspberry Pi disk image (Pi 3, 4, 5, 400, 500, CM3/4/5). Flash it to an SD card or SSD; cloud-init configures it on first boot. |
-| `desktop` | `output/ubuntu-26.04.1-desktop-autoinstall-amd64.iso` | x86-64 Ubuntu Desktop installer ISO for local VMs. Same unattended install, with VM guest tools and a developer workstation setup. |
+| `desktop` | `output/ubuntu-26.04.1-desktop-autoinstall-amd64.iso` | x86-64 Ubuntu Desktop installer ISO for local VMs. Same unattended install, with VM guest tools, everyday command-line tools and Docker. |
 
-All targets currently use **Ubuntu 26.04.1 LTS**. On first boot, every machine gets Docker, Helm, kubectl, Ansible and a unique hostname derived from its MAC address. The server ISO and the Pi are set up as **Kubernetes nodes** (kubeadm, kubelet, containerd configured, swap off, firewall), ready for `kubeadm init` or `kubeadm join`. The desktop is set up as a **workstation**: no kubelet or kubeadm, swap and firewall left as Ubuntu ships them.
+All targets currently use **Ubuntu 26.04.1 LTS**, and every machine gets a unique hostname derived from its MAC address on first boot.
+
+- **Server ISO and Raspberry Pi:** set up as **Kubernetes nodes**: Docker, kubeadm, kubelet, kubectl, Helm, Ansible, containerd configured for Kubernetes, swap off and a firewall. Ready for `kubeadm init` or `kubeadm join`.
+- **Desktop ISO:** a VM workstation with its own, separate first-boot setup: `vim`, `curl`, `wget`, `git`, `htop`, `tree`, `unzip`, `net-tools`, `ca-certificates`, `gnupg`, `lsb-release`, `software-properties-common`, `python3-pip`, `python3-setuptools`, `python3-wheel`, `ansible`, `ufw` (installed but left off), and Docker Engine with the Buildx and Compose plugins. No Kubernetes or Helm.
 
 ## Quick start
 
@@ -18,9 +21,13 @@ All targets currently use **Ubuntu 26.04.1 LTS**. On first boot, every machine g
 cp config/secrets.env.example config/secrets.env
 # edit ADMIN_USER and ADMIN_PASSWORD in config/secrets.env
 
-cp config/authorized_keys.example config/authorized_keys   # optional
-# add your public keys, one per line
+# optional: your SSH public key(s), one per line
+cp ~/.ssh/id_ed25519.pub config/authorized_keys
 ```
+
+**SSH keys:** every key in `config/authorized_keys` is added to the login user on all three images. When at least one key is there, the **server ISO and Raspberry Pi** turn off SSH password logins (`PasswordAuthentication no`), so only your keys can log in over SSH; this blocks password brute-forcing. The desktop ISO keeps SSH passwords, since it's a local VM. Your password still works at the console and for `sudo`. Change this with `SSH_ALLOW_PASSWORD` in `config/build.env`: `auto` (default, as above), `false` (keys only on every image) or `true` (always allow passwords). The build checks the file: it refuses a private key pasted by mistake and skips lines that aren't public keys, with a warning.
+
+On the server and Pi, the setting goes into `/etc/ssh/sshd_config` and into `/etc/ssh/sshd_config.d/01-password-auth.conf`. sshd reads the `sshd_config.d` files first and uses the first value it finds, so the `01-` file wins over anything else there.
 
 You don't need to generate a hash yourself: the build runs `ADMIN_PASSWORD` through `openssl passwd -6` (SHA-512, random salt) and only the hash goes into the images. If you'd rather not keep the plain password on disk, you can set `PASSWORD_HASH` to the output of `openssl passwd -6` instead; if both are set, `ADMIN_PASSWORD` wins. The username can't be a system name such as `admin`, `root` or `sudo`, because the Ubuntu installer refuses those; the build checks this for you. Both files are ignored by git, so your credentials stay out of the repository.
 
@@ -67,21 +74,23 @@ Skip Raspberry Pi Imager's "OS customisation" step: it replaces the image's clou
 
 ```bash
 cloud-init status --long             # "status: done" when finished
-less /var/log/provision-node.log     # Docker / Kubernetes / Helm install log
+less /var/log/provision-node.log     # server and Pi: Docker / Kubernetes / Helm install log
+less /var/log/setup-desktop.log      # desktop: tools and Docker install log
 ```
 
-The server and Pi nodes are then ready for `kubeadm init` or `kubeadm join`. On the desktop, log out and back in once so your user can run `docker` without `sudo`.
+The server and Pi nodes are then ready for `kubeadm init` or `kubeadm join`. On all three, the `docker` group is created and your user added to it during the install, so `docker` works without `sudo` from your first login once the first-boot setup has finished.
 
 ## Configuration
 
 | File | What it controls |
 |---|---|
-| `config/build.env` | Ubuntu version, hostname prefixes, locale, timezone, Kubernetes version, ISO confirmation and boot-menu timeout, Pi kernel arguments |
+| `config/build.env` | Ubuntu version, hostname prefixes, locale, timezone, SSH password logins, Kubernetes version, ISO confirmation and boot-menu timeout, Pi kernel arguments |
 | `config/secrets.env` | Login user: `ADMIN_USER` and `ADMIN_PASSWORD` (or `PASSWORD_HASH`) (not in git) |
-| `config/authorized_keys` | SSH public keys for the login user (not in git) |
-| `config/common-user-data.yaml` | **Shared** first-boot setup for all targets: packages, Docker, Helm, kubectl, hostname, plus the Kubernetes node setup for the server ISO and Pi |
+| `config/authorized_keys` | SSH public keys for the login user, one per line (not in git). With keys present, the server ISO and Pi allow SSH logins with keys only |
+| `config/common-user-data.yaml` | First-boot setup **shared by the server ISO and the Pi**: packages, Docker, Kubernetes, Helm, firewall, hostname |
 | `config/iso-autoinstall.yaml` | Server ISO installer settings: disk layout, keyboard, user |
 | `config/desktop-autoinstall.yaml` | Desktop ISO installer settings: disk layout, keyboard, user, VM guest tools |
+| `config/desktop-user-data.yaml` | Desktop ISO first-boot setup: the tool list and Docker install (edit the `tools=(...)` list to change packages) |
 | `config/pi-user-data.yaml` | Pi-only settings: user and SSH |
 | `config/pi-network-config.yaml` | *Optional, not in git.* Copy from `pi-network-config.yaml.example`. If present, replaces the Pi's [netplan network config](https://cloudinit.readthedocs.io/en/latest/reference/network-config-format-v2.html), e.g. for Wi-Fi or a static IP |
 

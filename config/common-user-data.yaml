@@ -1,8 +1,8 @@
-# First-boot configuration (cloud-init) shared by all three images: server ISO,
-# Raspberry Pi and desktop ISO. ${NAME} placeholders are filled in from
+# First-boot configuration (cloud-init) shared by the server ISO and the
+# Raspberry Pi image: both become Kubernetes nodes. The desktop ISO has its own
+# file, desktop-user-data.yaml. ${NAME} placeholders are filled in from
 # config/build.env at build time; other $variables are left alone for the shell
-# scripts below. ${PROVISION_ROLE} is "node" for the server ISO and the Pi, and
-# "workstation" for the desktop ISO (see provision-node below).
+# scripts below.
 #
 # On the installed machine:
 #   cloud-init status --long          did first boot finish, and did anything fail?
@@ -37,6 +37,46 @@ packages:
   - ansible
 
 write_files:
+  # SSH password logins: "no" when keys were provided in config/authorized_keys
+  # (SSH_ALLOW_PASSWORD=auto), so only those keys can log in over SSH. Files in
+  # sshd_config.d are read before /etc/ssh/sshd_config and the first value wins,
+  # so this "01-" file overrides everything else; set-ssh-password-auth below
+  # also writes the same value into sshd_config itself.
+  - path: /etc/ssh/sshd_config.d/01-password-auth.conf
+    content: |
+      PasswordAuthentication ${SSH_PASSWORD_AUTH}
+      KbdInteractiveAuthentication no
+
+  - path: /usr/local/sbin/set-ssh-password-auth
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Writes PasswordAuthentication into /etc/ssh/sshd_config (in addition to the
+      # 01-password-auth.conf drop-in), checks the config, and reloads sshd.
+      set -euo pipefail
+      value="${SSH_PASSWORD_AUTH}"
+      cfg=/etc/ssh/sshd_config
+      if grep -qE '^[#[:space:]]*PasswordAuthentication[[:space:]]' "$cfg"; then
+        sed -i -E "0,/^[#[:space:]]*PasswordAuthentication[[:space:]].*/s//PasswordAuthentication $value/" "$cfg"
+      else
+        echo "PasswordAuthentication $value" >> "$cfg"
+      fi
+      sshd -t
+      systemctl reload ssh 2>/dev/null || systemctl restart ssh 2>/dev/null || true
+      echo "set-ssh-password-auth: PasswordAuthentication $value"
+      sshd -T 2>/dev/null | grep -i '^passwordauthentication' || true
+
+  # Kernel modules and sysctls that Kubernetes networking needs.
+  - path: /etc/modules-load.d/kubernetes.conf
+    content: |
+      overlay
+      br_netfilter
+  - path: /etc/sysctl.d/99-kubernetes.conf
+    content: |
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+
   - path: /etc/docker/daemon.json
     content: |
       {
@@ -81,13 +121,9 @@ write_files:
     permissions: '0755'
     content: |
       #!/bin/bash
-      # Runs once on first boot. Two roles, chosen per image at build time:
-      #   node         (server ISO, Raspberry Pi) Docker, Helm and the full Kubernetes
-      #                node setup, ready for `kubeadm init` / `kubeadm join`.
-      #   workstation  (desktop ISO) Docker, Helm and kubectl only; no kubelet or
-      #                kubeadm, swap left on, no Kubernetes firewall rules.
+      # Installs Docker, Kubernetes (kubeadm, kubelet, kubectl) and Helm, and
+      # prepares the node for `kubeadm init` / `kubeadm join`. Runs once on first boot.
       set -euxo pipefail
-      role="${PROVISION_ROLE}"
       admin_user="${ADMIN_USER}"
       k8s_version="${K8S_VERSION}"
       . /etc/os-release
@@ -125,31 +161,11 @@ write_files:
         'Signed-By: /etc/apt/keyrings/helm.asc' \
         > /etc/apt/sources.list.d/helm.sources
 
-      k8s_packages=(kubectl)
-      [ "$role" = node ] && k8s_packages+=(kubelet kubeadm)
-
       apt-get update
       DEBIAN_FRONTEND=noninteractive apt-get install -y \
         docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
-        helm "${k8s_packages[@]}"
-      apt-mark hold "${k8s_packages[@]}"
-      systemctl enable --now docker
-      usermod -aG docker "$admin_user"
-
-      if [ "$role" != node ]; then
-        echo "provision-node: done ($role)"
-        exit 0
-      fi
-
-      # ----- Kubernetes node setup (role=node only) -----
-
-      # Kernel modules and sysctls that Kubernetes networking needs.
-      printf '%s\n' overlay br_netfilter > /etc/modules-load.d/kubernetes.conf
-      printf '%s\n' \
-        'net.bridge.bridge-nf-call-iptables  = 1' \
-        'net.bridge.bridge-nf-call-ip6tables = 1' \
-        'net.ipv4.ip_forward                 = 1' \
-        > /etc/sysctl.d/99-kubernetes.conf
+        kubelet kubeadm kubectl helm
+      apt-mark hold kubelet kubeadm kubectl
 
       # Docker's containerd.io package ships with the CRI plugin disabled, which
       # Kubernetes needs. Replace it with the default config using the systemd
@@ -159,8 +175,11 @@ write_files:
       grep -q 'SystemdCgroup = true' /etc/containerd/config.toml \
         || echo "WARNING: could not enable SystemdCgroup in /etc/containerd/config.toml"
       systemctl restart containerd
+      systemctl enable --now docker
       systemctl enable kubelet
+      usermod -aG docker "$admin_user"
 
+      # Kernel modules and sysctls from write_files above.
       modprobe overlay
       modprobe br_netfilter
       sysctl --system
@@ -187,8 +206,9 @@ write_files:
       sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
       ufw --force enable
 
-      echo "provision-node: done ($role)"
+      echo "provision-node: done"
 
 runcmd:
+  - [/usr/local/sbin/set-ssh-password-auth]
   - [/usr/local/sbin/set-unique-hostname]
   - [sh, -c, "/usr/local/sbin/provision-node > /var/log/provision-node.log 2>&1"]

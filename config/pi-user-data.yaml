@@ -7,7 +7,9 @@ locale: ${LOCALE}
 ssh_pwauth: ${SSH_ALLOW_PASSWORD}
 users:
   - name: ${ADMIN_USER}
-    groups: [adm, sudo]
+    # cloud-init creates the docker group if it doesn't exist yet, so the user
+    # has it from the first login (Docker itself is installed later in first boot).
+    groups: [adm, sudo, docker]
     shell: /bin/bash
     lock_passwd: false
     passwd: "${PASSWORD_HASH}"

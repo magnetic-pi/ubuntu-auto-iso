@@ -1,3 +1,10 @@
-# Copy this file to config/authorized_keys (which git ignores) and put one
-# public key per line. Lines starting with # are ignored. Example:
+# Copy this file to config/authorized_keys (which git ignores) and put one SSH
+# PUBLIC key per line, e.g. the contents of ~/.ssh/id_ed25519.pub:
+#   cp ~/.ssh/id_ed25519.pub config/authorized_keys
+# Lines starting with # are ignored. Never put a private key here; the build
+# refuses to continue if it finds one.
+#
+# With at least one key here, the server ISO and Raspberry Pi images accept
+# only these keys for SSH (password logins over SSH are turned off). See
+# SSH_ALLOW_PASSWORD in config/build.env. Example:
 # ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@laptop

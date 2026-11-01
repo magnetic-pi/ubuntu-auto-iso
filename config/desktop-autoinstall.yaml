@@ -1,8 +1,7 @@
 # Installer settings for the desktop ISO (Ubuntu Desktop, autoinstall format),
 # meant for local VMs. ${NAME} placeholders are filled in from config/build.env
-# and config/secrets.env. The `user-data:` section is appended at build time
-# from common-user-data.yaml, in "workstation" mode: Docker, Helm, kubectl and
-# Ansible, but no Kubernetes node setup.
+# and config/secrets.env. The `user-data:` section (first-boot tools and Docker)
+# is appended at build time from desktop-user-data.yaml.
 autoinstall:
   version: 1
   locale: ${LOCALE}
@@ -25,9 +24,13 @@ autoinstall:
     # domifaddr), plus clipboard sharing and automatic screen resizing.
     - qemu-guest-agent
     - spice-vdagent
-    # Runs the first-boot user-data below; make sure it's on the desktop install.
+    # Runs the first-boot setup from desktop-user-data.yaml; make sure it's installed.
     - cloud-init
   late-commands:
+    # Create the docker group and add the user now, at install time, so the very
+    # first login already has it (Docker itself is installed on first boot).
+    - curtin in-target -- groupadd --system --force docker
+    - curtin in-target -- usermod -aG docker ${ADMIN_USER}
     # Let the first-boot user-data run even if the desktop image disabled cloud-init.
     - rm -f /target/etc/cloud/cloud-init.disabled
     # Skip GNOME's "Welcome to Ubuntu" setup wizard on first login.

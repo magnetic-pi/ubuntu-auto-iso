@@ -74,10 +74,12 @@ load_config() {
 
   check_username "$ADMIN_USER"
 
-  SSH_AUTHORIZED_KEYS="$(authorized_keys_yaml)"
-  if [ "$SSH_AUTHORIZED_KEYS" = "[]" ] && [ "$SSH_ALLOW_PASSWORD" != "true" ]; then
-    die "SSH_ALLOW_PASSWORD=false but config/authorized_keys has no keys; nobody could log in over SSH."
-  fi
+  load_authorized_keys
+  case "$SSH_ALLOW_PASSWORD" in
+    auto|true) ;;
+    false) [ "$SSH_KEY_COUNT" -gt 0 ] || die "SSH_ALLOW_PASSWORD=false but config/authorized_keys has no keys; nobody could log in over SSH." ;;
+    *) die "SSH_ALLOW_PASSWORD must be auto, true or false (got '$SSH_ALLOW_PASSWORD')." ;;
+  esac
 
   mkdir -p "$DOWNLOAD_DIR" "$OUTPUT_DIR"
 }
@@ -105,27 +107,59 @@ check_username() {
   esac
 }
 
-# Print config/authorized_keys as a YAML flow list: ["key one", "key two"]
-authorized_keys_yaml() {
-  local file="$CONFIG_DIR/authorized_keys" line out="" sep=""
+# Read config/authorized_keys (one public key per line, # comments allowed).
+# Sets SSH_AUTHORIZED_KEYS to a YAML flow list ["key one", "key two"] and
+# SSH_KEY_COUNT to the number of keys. Refuses private keys; skips lines that
+# don't look like public keys, with a warning.
+SSH_KEY_TYPES='(ssh-ed25519|ssh-rsa|ssh-dss|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)'
+load_authorized_keys() {
+  local file="$CONFIG_DIR/authorized_keys" line out="" sep="" n=0 lineno=0
   if [ -f "$file" ]; then
+    grep -q "PRIVATE KEY" "$file" \
+      && die "config/authorized_keys contains a PRIVATE key. Put only public keys there (the .pub file, e.g. ~/.ssh/id_ed25519.pub), and keep the private key secret."
     while IFS= read -r line || [ -n "$line" ]; do
+      lineno=$((lineno + 1))
       line="${line%$'\r'}"
-      [[ -z "${line// }" || "$line" == \#* ]] && continue
+      [[ -z "${line// }" || "$line" =~ ^[[:space:]]*\# ]] && continue
+      if ! [[ "$line" =~ (^|[[:space:]])$SSH_KEY_TYPES[[:space:]]+[A-Za-z0-9+/]+=*([[:space:]]|$) ]]; then
+        warn "config/authorized_keys line $lineno doesn't look like an SSH public key; skipping it."
+        continue
+      fi
       line="${line//\\/\\\\}"
       line="${line//\"/\\\"}"
       out+="$sep\"$line\""
       sep=", "
+      n=$((n + 1))
     done < "$file"
   fi
-  echo "[$out]"
+  SSH_AUTHORIZED_KEYS="[$out]"
+  SSH_KEY_COUNT=$n
+}
+
+# Decide whether SSH accepts passwords on this image. SSH_ALLOW_PASSWORD=auto
+# (the default) means: with keys in config/authorized_keys, use $1 (false for
+# the server ISO and Pi, true for the desktop); without keys, allow passwords so
+# nobody is locked out. Sets SSH_ALLOW_PASSWORD (true/false) and
+# SSH_PASSWORD_AUTH (yes/no, for sshd_config).
+resolve_ssh_password() {
+  if [ "$SSH_ALLOW_PASSWORD" = auto ]; then
+    if [ "$SSH_KEY_COUNT" -gt 0 ]; then SSH_ALLOW_PASSWORD="$1"; else SSH_ALLOW_PASSWORD=true; fi
+  fi
+  if [ "$SSH_ALLOW_PASSWORD" = true ]; then SSH_PASSWORD_AUTH=yes; else SSH_PASSWORD_AUTH=no; fi
+  if [ "$SSH_PASSWORD_AUTH" = no ]; then
+    log "SSH: $SSH_KEY_COUNT key(s) added; password logins over SSH disabled (keys only)."
+  elif [ "$SSH_KEY_COUNT" -gt 0 ]; then
+    log "SSH: $SSH_KEY_COUNT key(s) added; password logins over SSH still allowed."
+  else
+    log "SSH: no keys in config/authorized_keys; password logins over SSH allowed."
+  fi
 }
 
 # Replace ${NAME} placeholders in a template with the values of these variables.
 # Anything else that looks like a variable (e.g. $foo, ${foo:-bar}) is left alone.
 TEMPLATE_VARS=(
   ADMIN_USER HOSTNAME_PREFIX LOCALE KEYBOARD_LAYOUT TIMEZONE
-  SSH_ALLOW_PASSWORD SSH_AUTHORIZED_KEYS PASSWORD_HASH K8S_VERSION PROVISION_ROLE
+  SSH_ALLOW_PASSWORD SSH_PASSWORD_AUTH SSH_AUTHORIZED_KEYS PASSWORD_HASH K8S_VERSION
 )
 render_template() {
   local content name

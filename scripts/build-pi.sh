@@ -10,7 +10,7 @@ source "$(dirname "$0")/lib.sh"
 
 load_config
 HOSTNAME_PREFIX="$PI_HOSTNAME_PREFIX"
-PROVISION_ROLE=node
+resolve_ssh_password false   # keys present -> SSH keys only
 
 SOURCE_IMG="ubuntu-${UBUNTU_VERSION}-preinstalled-server-arm64+raspi.img.xz"
 OUTPUT_IMG="$OUTPUT_DIR/ubuntu-${UBUNTU_VERSION}-autoconfig-arm64+raspi.img.xz"

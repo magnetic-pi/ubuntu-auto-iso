@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds an x86-64 Ubuntu ISO that installs itself without prompts.
-#   build-iso.sh server    Ubuntu Server   config/iso-autoinstall.yaml     + common-user-data.yaml (node)
-#   build-iso.sh desktop   Ubuntu Desktop  config/desktop-autoinstall.yaml + common-user-data.yaml (workstation)
+#   build-iso.sh server    Ubuntu Server   config/iso-autoinstall.yaml     + common-user-data.yaml
+#   build-iso.sh desktop   Ubuntu Desktop  config/desktop-autoinstall.yaml + desktop-user-data.yaml
 #
 # Rather than unpacking the whole ISO, this asks xorriso to copy the official
 # image with three files swapped in (autoinstall.yaml, grub.cfg, md5sum.txt) and
@@ -16,16 +16,18 @@ load_config
 case "$VARIANT" in
   server)
     HOSTNAME_PREFIX="$ISO_HOSTNAME_PREFIX"
-    PROVISION_ROLE=node
     TEMPLATE="$CONFIG_DIR/iso-autoinstall.yaml"
+    resolve_ssh_password false   # keys present -> SSH keys only
+    USER_DATA="$CONFIG_DIR/common-user-data.yaml"
     SOURCE_ISO="ubuntu-${UBUNTU_VERSION}-live-server-amd64.iso"
     OUTPUT_ISO="$OUTPUT_DIR/ubuntu-${UBUNTU_VERSION}-autoinstall-amd64.iso"
     MENU_TITLE="Autoinstall Ubuntu Server"
     ;;
   desktop)
     HOSTNAME_PREFIX="$DESKTOP_HOSTNAME_PREFIX"
-    PROVISION_ROLE=workstation
     TEMPLATE="$CONFIG_DIR/desktop-autoinstall.yaml"
+    resolve_ssh_password true    # local VM: keep SSH passwords unless SSH_ALLOW_PASSWORD=false
+    USER_DATA="$CONFIG_DIR/desktop-user-data.yaml"
     SOURCE_ISO="ubuntu-${UBUNTU_VERSION}-desktop-amd64.iso"
     OUTPUT_ISO="$OUTPUT_DIR/ubuntu-${UBUNTU_VERSION}-desktop-autoinstall-amd64.iso"
     MENU_TITLE="Autoinstall Ubuntu Desktop"
@@ -38,12 +40,12 @@ trap 'rm -rf "$WORK"' EXIT
 
 # 1. Render the installer config: installer settings + shared first-boot user-data.
 log "Rendering autoinstall.yaml (Ubuntu $UBUNTU_VERSION $VARIANT)..."
-{ echo "#cloud-config"; render_template "$CONFIG_DIR/common-user-data.yaml"; } > "$WORK/user-data.check"
+{ echo "#cloud-config"; render_template "$USER_DATA"; } > "$WORK/user-data.check"
 validate_cloud_config "$WORK/user-data.check"
 {
   render_template "$TEMPLATE"
   echo "  user-data:"
-  render_template "$CONFIG_DIR/common-user-data.yaml" | sed 's/^\(.\)/    \1/'
+  render_template "$USER_DATA" | sed 's/^\(.\)/    \1/'
 } > "$WORK/autoinstall.yaml"
 
 # 2. Get the official ISO.

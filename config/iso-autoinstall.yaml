@@ -21,3 +21,8 @@ autoinstall:
     # Kubernetes needs swap off, so don't create a swap file.
     swap:
       size: 0
+  late-commands:
+    # Create the docker group and add the user now, at install time, so the very
+    # first login already has it (Docker itself is installed on first boot).
+    - curtin in-target -- groupadd --system --force docker
+    - curtin in-target -- usermod -aG docker ${ADMIN_USER}
